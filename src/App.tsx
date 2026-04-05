@@ -13,22 +13,47 @@ import PlaylistGrid from './components/PlaylistGrid';
 import { ChineseProvider } from './lib/ChineseContext';
 import { useLanguageStore, LANGUAGES } from './store/languageStore';
 import { DictionaryProvider } from './hooks/useDictionary';
+import { AuthProvider } from './context/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
 import WatchPage from './pages/WatchPage';
 import VocabularyPage from './pages/VocabularyPage';
 import GameReactionPage from './pages/GameReactionPage';
 
 export default function App() {
   return (
-    <ChineseProvider>
-      <DictionaryProvider>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/watch/:youtubeId" element={<WatchPage />} />
-          <Route path="/vocabulary" element={<VocabularyPage />} />
-          <Route path="/games" element={<GameReactionPage />} />
-        </Routes>
-      </DictionaryProvider>
-    </ChineseProvider>
+    <AuthProvider>
+      <ChineseProvider>
+        <DictionaryProvider>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route 
+              path="/watch/:youtubeId" 
+              element={
+                <ProtectedRoute>
+                  <WatchPage />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/vocabulary" 
+              element={
+                <ProtectedRoute>
+                  <VocabularyPage />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/games" 
+              element={
+                <ProtectedRoute>
+                  <GameReactionPage />
+                </ProtectedRoute>
+              } 
+            />
+          </Routes>
+        </DictionaryProvider>
+      </ChineseProvider>
+    </AuthProvider>
   );
 }
 
