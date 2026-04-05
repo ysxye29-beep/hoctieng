@@ -5,8 +5,7 @@ import {
 import {
   type User,
   onAuthStateChanged,
-  signInWithRedirect,
-  getRedirectResult,
+  signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
@@ -37,24 +36,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error,   setError]   = useState<string | null>(null)
   const [isAuthModalOpen, setAuthModalOpen] = useState(false)
 
-useEffect(() => {
-    // Bắt kết quả sau khi Google redirect về
-    getRedirectResult(auth).then((result) => {
-      if (result?.user) setUser(result.user)
-    }).catch((e: unknown) => {
-      const code = (e as { code?: string }).code ?? ''
-      setError(parseError(code))
-    })
-
-    // Giữ nguyên phần này
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u)
-      setLoading(false)
-    })
-    return unsub
-  }, [])
-
-  // Dịch lỗi Firebase sang tiếng Việt
   const parseError = (code: string): string => {
     const map: Record<string, string> = {
       'auth/user-not-found':       'Không tìm thấy tài khoản.',
@@ -69,15 +50,23 @@ useEffect(() => {
     return map[code] ?? 'Có lỗi xảy ra. Thử lại sau.'
   }
 
-const loginGoogle = useCallback(async () => {
-  try {
-    setError(null)
-    await signInWithRedirect(auth, googleProvider)
-  } catch (e: unknown) {
-    const code = (e as { code?: string }).code ?? ''
-    setError(parseError(code))
-  }
-}, [])
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u)
+      setLoading(false)
+    })
+    return unsub
+  }, [])
+
+  const loginGoogle = useCallback(async () => {
+    try {
+      setError(null)
+      await signInWithPopup(auth, googleProvider)
+    } catch (e: unknown) {
+      const code = (e as { code?: string }).code ?? ''
+      setError(parseError(code))
+    }
+  }, [])
 
   const loginEmail = useCallback(async (email: string, password: string) => {
     try {
