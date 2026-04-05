@@ -5,7 +5,8 @@ import {
 import {
   type User,
   onAuthStateChanged,
-  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
@@ -36,8 +37,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error,   setError]   = useState<string | null>(null)
   const [isAuthModalOpen, setAuthModalOpen] = useState(false)
 
-  // Lắng nghe trạng thái đăng nhập từ Firebase
-  useEffect(() => {
+useEffect(() => {
+    // Bắt kết quả sau khi Google redirect về
+    getRedirectResult(auth).then((result) => {
+      if (result?.user) setUser(result.user)
+    }).catch((e: unknown) => {
+      const code = (e as { code?: string }).code ?? ''
+      setError(parseError(code))
+    })
+
+    // Giữ nguyên phần này
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
       setLoading(false)
@@ -60,15 +69,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return map[code] ?? 'Có lỗi xảy ra. Thử lại sau.'
   }
 
-  const loginGoogle = useCallback(async () => {
-    try {
-      setError(null)
-      await signInWithPopup(auth, googleProvider)
-    } catch (e: unknown) {
-      const code = (e as { code?: string }).code ?? ''
-      setError(parseError(code))
-    }
-  }, [])
+const loginGoogle = useCallback(async () => {
+  try {
+    setError(null)
+    await signInWithRedirect(auth, googleProvider)
+  } catch (e: unknown) {
+    const code = (e as { code?: string }).code ?? ''
+    setError(parseError(code))
+  }
+}, [])
 
   const loginEmail = useCallback(async (email: string, password: string) => {
     try {
