@@ -7,9 +7,7 @@ import type { VideoItem } from '../lib/storage'
 import DictationTab from '../components/watch/DictationTab'
 import ShadowingTab from '../components/tabs/ShadowingTab'
 import PronunciationTab from '../components/PronunciationTab'
-import SummaryTab from '../components/watch/SummaryTab'
 import { useVideoAnalysis } from '../hooks/useVideoAnalysis'
-import { useVideoSummary } from '../hooks/useVideoSummary'
 import type { TranscriptLine, TranscriptSource, DictationSession } from '../lib/transcriptExtractor'
 
 import { useFontSizeStore } from '../store/fontSizeStore'
@@ -77,6 +75,7 @@ export default function WatchPage() {
 
   const [currentTime, setCurrentTime] = useState(0)
   const isPlayingRef = useRef(false)
+  const speedRef = useRef(1)
 
   // Tiến độ chung cho các tab (dùng chung index)
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -103,56 +102,147 @@ export default function WatchPage() {
     step 
   } = useVideoAnalysis(youtubeId ?? '', videoLanguage)
 
-  const transcriptText = subtitles.map(s => s.text).join(' ')
-  const { summary, isLoading: isSummaryLoading, refresh: refreshSummary } = useVideoSummary(youtubeId ?? '', videoLanguage, transcriptText)
+  // ── Refs cho time tracking ──
+  const lastKnownTimeRef = useRef(0)
+  const lastKnownWallRef = useRef(0)   // performance.now() khi lần cuối biết currentTime
+  const rafRef = useRef<number | null>(null)
+
+  const isMountedRef = useRef(true)
 
   // ── Lắng nghe YouTube postMessage ──
   useEffect(() => {
+    isMountedRef.current = true
     const onMessage = (e: MessageEvent) => {
       try {
         const raw = e.data
         const data = typeof raw === 'string' ? JSON.parse(raw) : raw
         if (!data || typeof data !== 'object') return
 
+        // Nhận currentTime từ YouTube (bất kỳ event nào có info.currentTime)
+        const info = data.info ?? {}
+        
         if (data.event === 'infoDelivery') {
-          const info = data.info ?? {}
           if (typeof info.playerState === 'number') {
-            isPlayingRef.current = info.playerState === 1
+            const playing = info.playerState === 1
+            isPlayingRef.current = playing
+            if (!playing) lastKnownWallRef.current = 0
           }
-          if (typeof info.currentTime === 'number') {
-            setCurrentTime(info.currentTime)
+          if (typeof info.currentTime === 'number' && info.currentTime > 0) {
+            lastKnownTimeRef.current = info.currentTime
+            lastKnownWallRef.current = performance.now()
+            if (isMountedRef.current) setCurrentTime(info.currentTime)
           }
         }
 
         if (data.event === 'onStateChange') {
-          const state = typeof data.info === 'number' ? data.info : data.info?.playerState
+          const state = typeof data.info === 'number' ? data.info : info?.playerState
           if (typeof state === 'number') {
-            isPlayingRef.current = state === 1
+            const playing = state === 1
+            isPlayingRef.current = playing
+            if (!playing) {
+              lastKnownWallRef.current = 0
+            } else {
+              // Khi bắt đầu play: đánh dấu wall clock để RAF bắt đầu nội suy
+              lastKnownWallRef.current = performance.now()
+            }
           }
         }
       } catch { /* ignore */ }
     }
 
     window.addEventListener('message', onMessage)
-    
-    // Kích hoạt YouTube gửi updates
-    const timer = setTimeout(() => {
-      ytCommand('listening', [1, 'widget'])
-    }, 1000)
+
+    // Detect play/pause qua window blur/focus:
+    // Khi user click vào iframe → window blur → có thể đang play
+    // Khi click ra ngoài iframe → window focus lại
+    let blurTimeout: any = null
+    const onWindowBlur = () => {
+      if (document.activeElement?.tagName === 'IFRAME') {
+        // User click vào iframe - toggle play state sau 300ms
+        blurTimeout = setTimeout(() => {
+          if (document.activeElement?.tagName === 'IFRAME') {
+            // Nếu chưa nhận được onStateChange, tự toggle
+            const wasPlaying = isPlayingRef.current
+            isPlayingRef.current = !wasPlaying
+            if (!wasPlaying) {
+              // Bắt đầu play
+              lastKnownWallRef.current = performance.now()
+            } else {
+              // Pause
+              // Lưu lại thời gian hiện tại
+              if (lastKnownWallRef.current > 0) {
+                const elapsed = (performance.now() - lastKnownWallRef.current) / 1000
+                lastKnownTimeRef.current = lastKnownTimeRef.current + elapsed * speedRef.current
+              }
+              lastKnownWallRef.current = 0
+            }
+          }
+        }, 300)
+      }
+    }
+    window.addEventListener('blur', onWindowBlur)
+    const subscribe = () => {
+      iframeRef.current?.contentWindow?.postMessage(
+        JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*'
+      )
+    }
+    subscribe()
+    const t1 = setTimeout(subscribe, 1000)
+    const t2 = setTimeout(subscribe, 2000)
+    const t3 = setTimeout(subscribe, 4000)
+    const keepAlive = setInterval(subscribe, 5000)
 
     return () => {
+      isMountedRef.current = false
       window.removeEventListener('message', onMessage)
-      clearTimeout(timer)
+      window.removeEventListener('blur', onWindowBlur)
+      if (blurTimeout) clearTimeout(blurTimeout)
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3)
+      clearInterval(keepAlive)
     }
   }, [youtubeId])
+
+  // ── RAF: nội suy currentTime 60fps ──
+  // Khi YouTube gửi currentTime (vài giây/lần), RAF tự nội suy ở giữa
+  // Khi YouTube KHÔNG gửi gì (trường hợp phổ biến), RAF tự đếm từ lastKnownTime
+  useEffect(() => {
+    const tick = () => {
+      if (!isMountedRef.current) return
+      if (isPlayingRef.current && lastKnownWallRef.current > 0) {
+        const elapsedSec = (performance.now() - lastKnownWallRef.current) / 1000
+        const interpolated = lastKnownTimeRef.current + elapsedSec * speed
+        setCurrentTime(interpolated)
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+  }, [speed])
 
   // Tự động cập nhật currentIndex dựa trên currentTime khi đang phát
   useEffect(() => {
     if (!isPlayingRef.current || subtitles.length === 0) return
 
-    const newIndex = subtitles.findIndex(s => 
-      currentTime >= s.startTime && currentTime < s.endTime
-    )
+    let newIndex = subtitles.findIndex(s => {
+      const start = s.startTime ?? (s as any).start ?? 0;
+      const end = s.endTime ?? (start + ((s as any).duration ?? 0));
+      return currentTime >= start - 0.5 && currentTime < end + 0.5;
+    })
+
+    if (newIndex === -1) {
+      for (let i = subtitles.length - 1; i >= 0; i--) {
+        const s = subtitles[i];
+        const start = s.startTime ?? (s as any).start ?? 0;
+        if (start <= currentTime) {
+          newIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (newIndex === -1 && subtitles.length > 0) {
+      newIndex = 0;
+    }
     
     if (newIndex !== -1 && newIndex !== currentIndex) {
       setCurrentIndex(newIndex)
@@ -228,6 +318,7 @@ export default function WatchPage() {
 
   const handleSpeed = (rate: number) => {
     setSpeed(rate)
+    speedRef.current = rate
     ytCommand('setPlaybackRate', [rate])
   }
 
@@ -254,7 +345,7 @@ export default function WatchPage() {
       
       {/* ── HEADER ── */}
       <header className="h-14 border-b border-zinc-800 flex items-center px-4 gap-3 sticky top-0 bg-[#121212]/95 backdrop-blur z-10">
-        <button onClick={() => navigate(-1)}
+        <button onClick={() => navigate('/')}
           className="p-2 rounded-lg hover:bg-zinc-800 transition-colors">
           <ArrowLeft size={20} />
         </button>
@@ -272,14 +363,36 @@ export default function WatchPage() {
         <div className="lg:w-[58%] flex flex-col gap-3 p-4 border-r border-zinc-800">
           
           {/* YouTube iframe */}
-          <div className={`rounded-xl overflow-hidden bg-black transition-all duration-300
-            ${hideVideo && activeTab === 'dictation' ? 'h-0 opacity-0' : 'h-auto opacity-100'}`}>
+          <div
+            className={`rounded-xl overflow-hidden bg-black transition-all duration-300
+              ${hideVideo && activeTab === 'dictation' ? 'h-0 opacity-0' : 'h-auto opacity-100'}`}
+            onClick={() => {
+              // Khi user click vào vùng video → toggle isPlayingRef
+              // vì sau khi click vào iframe, window mất focus → dùng để detect
+              setTimeout(() => {
+                if (document.activeElement?.tagName !== 'IFRAME') return
+                // Nếu đang focus vào iframe = user vừa click play
+                isPlayingRef.current = !isPlayingRef.current
+                if (isPlayingRef.current) {
+                  lastKnownWallRef.current = performance.now()
+                } else {
+                  lastKnownWallRef.current = 0
+                }
+              }, 200)
+            }}
+          >
             <iframe
               ref={iframeRef}
               src={`https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&rel=0&modestbranding=1&origin=${window.location.origin}`}
               className="w-full aspect-video"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
               allowFullScreen
+              onLoad={() => {
+                const sub = () => iframeRef.current?.contentWindow?.postMessage(
+                  JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), '*'
+                )
+                sub(); setTimeout(sub, 500); setTimeout(sub, 1500); setTimeout(sub, 3000)
+              }}
             />
           </div>
 
@@ -365,6 +478,7 @@ export default function WatchPage() {
             <div className={activeTab === 'pronunciation' ? 'block' : 'hidden'}>
               {!isAnalyzing && subtitles.length > 0
                 ? <PronunciationTab 
+                    isActive={activeTab === 'pronunciation'}
                     subtitles={subtitles}
                     currentIndex={currentIndex}
                     onIndexChange={(idx) => {
@@ -393,6 +507,7 @@ export default function WatchPage() {
             <div className={activeTab === 'dictation' ? 'block' : 'hidden'}>
               {isAnalyzing ? <LoadingScreen step={step} /> :
               <DictationTab 
+                isActive={activeTab === 'dictation'}
                 youtubeId={youtubeId}
                 language={videoLanguage}
                 videoTitle={video?.title ?? ''}
@@ -415,12 +530,6 @@ export default function WatchPage() {
               />}
             </div>
             {activeTab === 'quiz' && <QuizTab />}
-            {activeTab === 'summary' && (
-              <SummaryTab 
-                video={video} 
-                transcript={transcriptText} 
-              />
-            )}
           </div>
 
           {/* ── BOTTOM CONTROLS (Toggles & Font Size) ── */}
@@ -495,7 +604,7 @@ function QuizTab() {
   return (
     <div className="flex flex-col gap-5">
       {questions.map((q, i) => (
-        <div key={i} className="flex flex-col gap-2">
+        <div key={`section-${i}`} className="flex flex-col gap-2">
           <p className="font-medium text-zinc-300"
              style={{ fontSize: 'var(--font-size-main)' }}>
             {i + 1}. {q.q}

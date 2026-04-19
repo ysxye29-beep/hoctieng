@@ -147,8 +147,8 @@ export default function ShadowingTab({
       id: line.id.toString(),
       text: line.text,
       translation: line.translation,
-      startTime: line.startTime,
-      endTime: line.endTime,
+      startTime: line.startTime ?? (line as any).start ?? 0,
+      endTime: line.endTime ?? ((line as any).start + (line as any).duration) ?? 0,
       tokens
     }
   }), [subtitles, language])
@@ -328,9 +328,16 @@ export default function ShadowingTab({
           {/* Hàng từng từ */}
           <div className="flex flex-wrap gap-x-3 gap-y-4 items-end">
             {(() => {
-              const progress   = getWordProgress(activeSentence, currentTime)
-              const words      = activeSentence.tokens
-              const activeWord = Math.floor(progress * words.length)
+              const words = activeSentence.tokens;
+              let activeWord = -1;
+              if (currentTime < activeSentence.startTime) {
+                activeWord = -1;
+              } else if (currentTime > activeSentence.endTime) {
+                activeWord = words.length;
+              } else {
+                const progress = getWordProgress(activeSentence, currentTime);
+                activeWord = Math.min(Math.floor(progress * words.length), words.length - 1);
+              }
 
               return words.map((token, i) => (
                 <WordCard

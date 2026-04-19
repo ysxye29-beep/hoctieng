@@ -44,6 +44,7 @@ function gradeAnswer(original: string, input: string): WordResult[] {
 
 // ── Component chính ─────────────────────────────────────
 interface DictationTabProps {
+  isActive: boolean
   youtubeId: string
   language: string
   videoTitle: string
@@ -66,7 +67,7 @@ interface DictationTabProps {
 }
 
 export default function DictationTab({ 
-  youtubeId, language, videoTitle, channelName, ytCommand,
+  isActive, youtubeId, language, videoTitle, channelName, ytCommand,
   subtitles: rawSubtitles, transcriptSource, session, setSession, scores, setScores, finished, setFinished, inputValue, onInputChange, currentIndex, onIndexChange, playbackRate = 1, currentTime
 }: DictationTabProps) {
   // State
@@ -79,14 +80,23 @@ export default function DictationTab({
 
   const transcript = rawSubtitles.map(s => s.text).join(' ')
 
+  const isMountedRef = useRef(true)
+
   async function handleLoadSentences() {
     if (!rawSubtitles || rawSubtitles.length === 0 || isSentenceLoading) return
     setIsSentenceLoading(true)
     const result = await extractSentences(rawSubtitles, youtubeId)
-    setSentences(result)
-    setSegmentTo(result.length || 1)
-    setIsSentenceLoading(false)
+    if (isMountedRef.current) {
+      setSentences(result)
+      setSegmentTo(result.length || 1)
+      setIsSentenceLoading(false)
+    }
   }
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => { isMountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     if (rawSubtitles.length > 0 && sentences.length === 0) {
@@ -103,8 +113,8 @@ export default function DictationTab({
         id: s.index,
         text: s.en,
         translation: '',
-        startTime: s.startTime,
-        endTime: s.endTime
+        startTime: s.startTime ?? (s as any).start ?? 0,
+        endTime: s.endTime ?? ((s as any).start + ((s as any).duration ?? 0)) ?? 0
       }))
     : rawSubtitles, [sentences.length, activeSentences, rawSubtitles])
   
@@ -376,12 +386,14 @@ export default function DictationTab({
     setPlayCount(0)
     
     // Đợi subtitles sẵn sàng rồi mới play
-    if (subtitles.length > 0 && subtitles[currentIndex]) {
+    if (isActive && subtitles.length > 0 && subtitles[currentIndex]) {
       setTimeout(() => playLine(), 100)
     }
-    setTimeout(() => inputRef.current?.focus(), 200)
+    setTimeout(() => {
+      if (isActive) inputRef.current?.focus()
+    }, 200)
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [currentIndex])
+  }, [currentIndex, isActive])
 
   // Bảo vệ currentIndex khi subtitles thay đổi
   useEffect(() => {
@@ -578,7 +590,7 @@ export default function DictationTab({
           {/* Điểm từng câu */}
           <div className="flex gap-1 flex-wrap justify-center">
             {scores.map((s, i) => (
-              <div key={i} title={`Câu ${i+1}: ${s}%`}
+              <div key={`${i}-${s}`} title={`Câu ${i+1}: ${s}%`}
                 className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold
                   ${s >= 80 ? 'bg-emerald-500/20 text-emerald-400' : 
                     s >= 60 ? 'bg-yellow-500/20 text-yellow-400' : 
@@ -1050,17 +1062,17 @@ export default function DictationTab({
                     {results.filter(r => /[\u4e00-\u9fff\w]/.test(r.original)).map((r, i) => {
                       if (r.correct) {
                         return (
-                          <span key={i} className="px-2 py-1 rounded-lg text-sm font-medium border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
+                          <span key={`${i}-${r.original}`} className="px-2 py-1 rounded-lg text-sm font-medium border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
                             {r.original}
                           </span>
                         )
                       }
                       return showFullAnswer ? (
-                        <span key={i} className="px-2 py-1 rounded-lg text-sm font-medium border border-red-500/30 bg-red-500/15 text-red-400 underline decoration-red-400/50">
+                        <span key={`${i}-${r.original}`} className="px-2 py-1 rounded-lg text-sm font-medium border border-red-500/30 bg-red-500/15 text-red-400 underline decoration-red-400/50">
                           {r.original}
                         </span>
                       ) : (
-                        <span key={i} className="px-2 py-1 rounded-lg text-sm font-medium border border-zinc-700 bg-zinc-800 text-zinc-600 font-mono tracking-widest">
+                        <span key={`${i}-${r.original}`} className="px-2 py-1 rounded-lg text-sm font-medium border border-zinc-700 bg-zinc-800 text-zinc-600 font-mono tracking-widest">
                           {'*'.repeat(r.original.length)}
                         </span>
                       )

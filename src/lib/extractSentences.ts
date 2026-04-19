@@ -8,7 +8,7 @@ export interface Sentence {
 }
 
 export async function extractSentences(lines: TranscriptLine[], youtubeId: string): Promise<Sentence[]> {
-  const cacheKey = `sentences_local_${youtubeId}`
+  const cacheKey = `sentences_local_v2_${youtubeId}`
   const cached = localStorage.getItem(cacheKey)
   if (cached) {
     try {

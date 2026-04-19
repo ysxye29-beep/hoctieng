@@ -1,7 +1,5 @@
 {
-  "name": "hoctieng",
+  "name": "YouTube Language Shadowing",
   "description": "A language learning app that helps you practice shadowing and dictation with YouTube videos using Gemini AI.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "requestFramePermissions": ["microphone"]
 }

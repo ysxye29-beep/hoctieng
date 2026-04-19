@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { Search, Youtube, Package, Gift, Diamond, Bell, Globe, User, LogOut, Settings, LayoutDashboard } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import AuthModal from './AuthModal';
 
 export default function Header() {
-  const { user, logout, loginGoogle, isAuthModalOpen, setAuthModalOpen } = useAuth();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  
+  // Mock user for now since auth was removed
+  const user = null;
+  const loginGoogle = () => {};
+  const logout = () => {};
 
   return (
     <header className="sticky top-0 z-40 w-full h-16 bg-[#0d0d0d]/80 backdrop-blur-md border-b border-zinc-800 flex items-center justify-between px-6">
@@ -116,7 +118,6 @@ export default function Header() {
           )}
         </div>
       </div>
-      <AuthModal open={isAuthModalOpen} onClose={() => setAuthModalOpen(false)} />
     </header>
   );
 }

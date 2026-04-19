@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
-import { Mic, ChevronLeft, ChevronRight, Play, RotateCcw, Pause, Volume2 } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { Mic, ChevronLeft, ChevronRight, Play, RotateCcw } from 'lucide-react'
 import { useEnPronunciation, type EnScore } from '../hooks/useEnPronunciation'
 import { useZhPronunciation, type ZhScore } from '../hooks/useZhPronunciation'
 import type { TranscriptLine } from '../lib/transcriptExtractor'
 import { useDictionaryContext } from '../hooks/useDictionary'
 
 interface PronunciationTabProps {
+  isActive: boolean
   subtitles: TranscriptLine[]
   language: string
   youtubeId: string
@@ -20,6 +21,7 @@ interface PronunciationTabProps {
 }
 
 export default function PronunciationTab({
+  isActive,
   subtitles,
   language,
   youtubeId,
@@ -35,11 +37,6 @@ export default function PronunciationTab({
   const en = useEnPronunciation()
   const zh = useZhPronunciation()
 
-  const [autoPause, setAutoPause] = useState(() => {
-    const saved = localStorage.getItem('pronunciation_auto_pause')
-    return saved === null ? true : saved === 'true'
-  })
-  const [showPrompt, setShowPrompt] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -137,12 +134,18 @@ export default function PronunciationTab({
     }
   }, [currentIndex, currentSentence, isZh])
 
+  const isMountedRef = useRef(true)
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => { isMountedRef.current = false }
+  }, [])
+
   const handleMicClickEn = () => {
     if (!currentSentence) return
     
     if (en.isRecording) {
       en.stopAndScore(currentSentence.text).then(() => {
-        if (en.score) {
+        if (isMountedRef.current && en.score) {
           onScoresChange({ ...scores, [currentIndex]: en.score })
         }
       })
@@ -157,7 +160,7 @@ export default function PronunciationTab({
 
     if (zh.isRecording) {
       await zh.stopAndScore(currentSentence.text)
-      if (zh.score) {
+      if (isMountedRef.current && zh.score) {
         onScoresChange({ ...scores, [currentIndex]: zh.score })
       }
     } else {
@@ -166,63 +169,17 @@ export default function PronunciationTab({
     }
   }
 
-  useEffect(() => {
-    localStorage.setItem('pronunciation_auto_pause', String(autoPause))
-  }, [autoPause])
-
-  // Ẩn gợi ý khi video phát lại (dựa trên currentTime thay đổi hoặc isPlaying)
-  useEffect(() => {
-    if (currentTime > (currentSentence?.startTime || 0) + 0.1 && currentTime < (currentSentence?.endTime || 0)) {
-      setShowPrompt(false)
-    }
-  }, [currentTime, currentSentence])
-
-  const goNext = useCallback(() => {
+  const goNext = () => {
     if (isEn) en.reset()
     if (isZh) zh.reset()
-    setShowPrompt(false)
     onIndexChange(Math.min(currentIndex + 1, subtitles.length - 1))
-  }, [currentIndex, subtitles.length, isEn, isZh, en, zh, onIndexChange])
+  }
   
-  const goPrev = useCallback(() => {
+  const goPrev = () => {
     if (isEn) en.reset()
     if (isZh) zh.reset()
-    setShowPrompt(false)
     onIndexChange(Math.max(currentIndex - 1, 0))
-  }, [currentIndex, isEn, isZh, en, zh, onIndexChange])
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-      
-      if (e.code === 'Space') {
-        e.preventDefault()
-        if (showPrompt) {
-          goNext()
-        } else {
-          // Toggle play/pause đơn giản qua ytCommand
-          // Vì player state được quản lý bởi YouTube, ta gửi lệnh toggle
-          // Tuy nhiên ytCommand hiện tại chỉ nhận func và args cụ thể
-          // Ta có thể dùng 'pauseVideo' hoặc 'playVideo'
-          // Để biết trạng thái hiện tại, ta dựa vào isPlaying (local state)
-          if (isPlaying) {
-            ytCommand('pauseVideo')
-            setIsPlaying(false)
-          } else {
-            ytCommand('playVideo')
-            setIsPlaying(true)
-          }
-        }
-      } else if (e.code === 'ArrowRight') {
-        goNext()
-      } else if (e.code === 'ArrowLeft') {
-        goPrev()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [showPrompt, goNext, goPrev, isPlaying, ytCommand])
+  }
 
   const playLine = useCallback(() => {
     if (!currentSentence) return
@@ -249,15 +206,12 @@ export default function PronunciationTab({
 
   // Tự động dừng khi đạt đến endTime + buffer
   useEffect(() => {
-    if (autoPause && currentSentence && currentTime >= currentSentence.endTime + 0.3) {
-      if (!showPrompt) {
-        ytCommand('pauseVideo')
-        setIsPlaying(false)
-        setShowPrompt(true)
-        if (timerRef.current) clearTimeout(timerRef.current)
-      }
+    if (isPlaying && currentSentence && currentTime >= currentSentence.endTime + 0.4) {
+      ytCommand('pauseVideo')
+      setIsPlaying(false)
+      if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [autoPause, currentSentence, currentTime, ytCommand, showPrompt])
+  }, [isPlaying, currentSentence, currentTime, ytCommand])
 
   // Tự động cuộn khi currentIndex thay đổi
   const sentenceRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -295,21 +249,7 @@ export default function PronunciationTab({
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4 text-sm text-zinc-400">
-        <div className="flex items-center gap-3">
-          <span>Câu {currentIndex + 1} / {subtitles.length}</span>
-          <button 
-            onClick={() => setAutoPause(!autoPause)}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-colors
-              ${autoPause 
-                ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' 
-                : 'bg-zinc-800 border-zinc-700 text-zinc-500'}`}
-          >
-            {autoPause ? <Pause size={12} /> : <Play size={12} />}
-            <span className="text-[10px] font-bold uppercase tracking-wider">
-              Tự dừng: {autoPause ? 'BẬT' : 'TẮT'}
-            </span>
-          </button>
-        </div>
+        <span>Câu {currentIndex + 1} / {subtitles.length}</span>
         <div className="flex gap-2">
           <button onClick={goPrev} disabled={currentIndex === 0}
             className="p-1 hover:text-white disabled:opacity-30">
@@ -377,47 +317,6 @@ export default function PronunciationTab({
              style={{ fontSize: 'var(--font-size-trans)' }}>
             {currentSentence.translation}
           </p>
-
-          {/* Practice Prompt */}
-          <AnimatePresence>
-            {showPrompt && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                className="mt-4 pt-4 border-t border-zinc-800 flex flex-col items-center text-center gap-3"
-              >
-                <div className="flex flex-col items-center gap-1">
-                  <div className="w-12 h-12 bg-emerald-500/20 rounded-full flex items-center justify-center animate-pulse mb-1">
-                    <Mic className="text-emerald-400" size={24} />
-                  </div>
-                  <p className="text-emerald-400 text-xs font-bold uppercase tracking-widest">Hãy thử đọc lại câu này</p>
-                </div>
-
-                <div className="bg-black/40 p-3 rounded-xl border border-zinc-800 w-full">
-                  {isZh && zh.pinyin && (
-                    <p className="text-zinc-300 font-mono text-sm mb-1 tracking-widest">{zh.pinyin}</p>
-                  )}
-                  <p className="text-zinc-400 text-xs italic">"{currentSentence.translation}"</p>
-                </div>
-
-                <div className="flex gap-2 w-full">
-                  <button 
-                    onClick={playLine}
-                    className="flex-1 flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors"
-                  >
-                    <RotateCcw size={14} /> Nghe lại
-                  </button>
-                  <button 
-                    onClick={goNext}
-                    className="flex-1 flex items-center justify-center gap-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium transition-colors"
-                  >
-                    Câu tiếp <ChevronRight size={14} />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
 
         <div className="flex flex-col items-center mb-6">

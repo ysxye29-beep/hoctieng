@@ -38,9 +38,10 @@ export interface DictationSession {
 }
 
 interface YouTubeEvent {
-  segs?: { utf8?: string }[]
+  segs?: { utf8?: string; tOffsetMs?: number }[]
   tStartMs?: number
   dDurationMs?: number
+  wWinId?: number
 }
 
 interface YouTubeCCResponse {
@@ -67,47 +68,99 @@ export async function fetchYouTubeCC(
   const data = await res.json() as YouTubeCCResponse
 
   // Parse YouTube CC format
+  // YouTube CC tiếng Trung có segs với tOffsetMs riêng từng seg
+  // Cần tách từng seg thành line riêng với timestamp chính xác
   const events = data.events ?? []
   const lines: TranscriptLine[] = []
   let id = 1
 
+  const isChinese = language === 'zh' || language === 'zh-CN' || language === 'zh-TW'
+
   for (const event of events) {
     if (!event.segs) continue
 
-    const text = event.segs
-      .map((s) => s.utf8 ?? '')
-      .join('')
-      .replace(/\n/g, ' ')
-      .trim()
+    const eventStart = (event.tStartMs ?? 0) / 1000
+    const eventDuration = (event.dDurationMs ?? 2000) / 1000
 
-    if (!text || text === ' ') continue
+    if (isChinese) {
+      // Với tiếng Trung: mỗi seg có thể có tOffsetMs riêng
+      // Gộp các segs liên tiếp KHÔNG có tOffsetMs vào cùng 1 line
+      // Tách khi gặp seg mới có tOffsetMs (= dòng mới trong event)
+      let currentText = ''
+      let currentStart = eventStart
 
-    const startTime = (event.tStartMs ?? 0) / 1000
-    const duration  = (event.dDurationMs ?? 2000) / 1000
+      for (let si = 0; si < event.segs.length; si++) {
+        const seg = event.segs[si]
+        const segText = (seg.utf8 ?? '').replace(/\n/g, ' ')
 
-    lines.push({
-      id:          id++,
-      startTime:   startTime,
-      endTime:     startTime + duration,
-      text,
-      translation: '',  // dịch sau
-      pinyin:      undefined,
-    })
+        if (seg.tOffsetMs !== undefined && seg.tOffsetMs > 0 && currentText.trim()) {
+          // Có offset mới → flush line cũ
+          const text = currentText.trim()
+          if (text) {
+            lines.push({
+              id: id++,
+              startTime: currentStart,
+              endTime: eventStart + seg.tOffsetMs / 1000,
+              text,
+              translation: '',
+              pinyin: undefined,
+            })
+          }
+          currentText = segText
+          currentStart = eventStart + seg.tOffsetMs / 1000
+        } else {
+          currentText += segText
+        }
+      }
+
+      // Flush dòng cuối của event
+      const finalText = currentText.trim()
+      if (finalText) {
+        lines.push({
+          id: id++,
+          startTime: currentStart,
+          endTime: eventStart + eventDuration,
+          text: finalText,
+          translation: '',
+          pinyin: undefined,
+        })
+      }
+    } else {
+      // Tiếng Anh/Nhật/Hàn: gộp tất cả segs trong event thành 1 line
+      const text = event.segs
+        .map((s) => s.utf8 ?? '')
+        .join('')
+        .replace(/\n/g, ' ')
+        .trim()
+
+      if (!text || text === ' ') continue
+
+      lines.push({
+        id:          id++,
+        startTime:   eventStart,
+        endTime:     eventStart + eventDuration,
+        text,
+        translation: '',
+        pinyin:      undefined,
+      })
+    }
   }
 
   if (lines.length < 3) throw new Error('CC too short')
 
   // FIX 1: Ensure endTime is valid (not 0 or missing)
   // If endTime is missing or same as startTime, use next subtitle's startTime
+  // Also cap duration at 8s to prevent long-running subtitles
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const nextLine = lines[i + 1];
     
-    if (!line.endTime || line.endTime <= line.startTime) {
-      if (nextLine) {
+    const duration = line.endTime - line.startTime;
+    if (!line.endTime || line.endTime <= line.startTime || duration > 8.0) {
+      if (nextLine && (nextLine.startTime - line.startTime) < 8.0) {
         line.endTime = nextLine.startTime;
       } else {
-        line.endTime = line.startTime + 5.0; // Last line fallback
+        line.endTime = line.startTime + 2.0; // Last line fallback or prevent huge gaps
       }
     }
   }
@@ -122,81 +175,145 @@ export async function fetchYouTubeCC(
   const twoMinLines = lines.filter(l => l.startTime >= 120 && l.startTime < 130).slice(0, 5)
   console.log('Lines at ~2min:', twoMinLines.map(l => `[${l.startTime}s - ${l.endTime}s] ${l.text.substring(0, 20)}...`))
 
-  return mergeShortLines(lines)
+  const validatedLines = validateTimestamps(lines, language)
+  return mergeShortLines(validatedLines)
 }
 
-// Gộp các dòng quá ngắn (<3 từ) vào dòng trước:
 function mergeShortLines(lines: TranscriptLine[]): TranscriptLine[] {
   const result: TranscriptLine[] = []
-  let buffer = ''
-  let bufferStart = 0
+  let buffer        = ''
+  let bufferStart   = 0
+  let bufferEndTime = 0
+  let bufferBaseLine: TranscriptLine | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    const wordCount = line.text.split(' ').length
+
+    const isChinese = /[\u4e00-\u9fa5]/.test(line.text)
+    const lineWordCount = isChinese
+      ? line.text.replace(/[^\u4e00-\u9fa5]/g, '').length
+      : line.text.split(/\s+/).filter(Boolean).length
+
+    // Tiếng Trung: gộp khi < 4 ký tự, tối đa 8s để tránh span quá dài
+    // Tiếng Anh: gộp khi < 3 từ, tối đa 6s
+    const MIN_WORDS = isChinese ? 4 : 3
+    const MAX_BUFFER_DURATION = isChinese ? 8.0 : 6.0
 
     if (buffer) {
-      buffer += ' ' + line.text
-      if (wordCount >= 3 || i === lines.length - 1) {
+      const wouldSpan = line.endTime - bufferStart
+      // Có gap lớn giữa 2 dòng → flush buffer, không gộp tiếp
+      const hasGap = line.startTime - bufferEndTime > 1.5
+      const tooLong = wouldSpan > MAX_BUFFER_DURATION
+
+      if (tooLong || hasGap) {
+        // Flush buffer cũ
         result.push({
-          ...line,
+          ...(bufferBaseLine || lines[i - 1]),
           id:        result.length + 1,
           startTime: bufferStart,
+          endTime:   bufferEndTime,  // dùng endTime của dòng cuối trong buffer, KHÔNG phải startTime của dòng tiếp
           text:      buffer.trim(),
         })
         buffer = ''
+        bufferBaseLine = null
+
+        // Xử lý dòng hiện tại riêng
+        if (lineWordCount < MIN_WORDS && i < lines.length - 1) {
+          buffer        = line.text
+          bufferStart   = line.startTime
+          bufferEndTime = line.endTime
+          bufferBaseLine = line
+        } else {
+          result.push({ ...line, id: result.length + 1 })
+        }
+        continue
       }
-    } else if (wordCount < 3 && i < lines.length - 1) {
-      buffer = line.text
-      bufferStart = line.startTime
+
+      buffer        += (isChinese ? '' : ' ') + line.text
+      bufferEndTime  = line.endTime  // cập nhật endTime theo dòng mới nhất
+
+      const bufferWordCount = isChinese
+        ? buffer.replace(/[^\u4e00-\u9fa5]/g, '').length
+        : buffer.split(/\s+/).filter(Boolean).length
+
+      if (bufferWordCount >= MIN_WORDS || i === lines.length - 1) {
+        result.push({
+          ...(bufferBaseLine || line),
+          id:        result.length + 1,
+          startTime: bufferStart,
+          endTime:   bufferEndTime,
+          text:      buffer.trim(),
+        })
+        buffer = ''
+        bufferBaseLine = null
+      }
+
+    } else if (lineWordCount < MIN_WORDS && i < lines.length - 1) {
+      buffer        = line.text
+      bufferStart   = line.startTime
+      bufferEndTime = line.endTime
+      bufferBaseLine = line
+
     } else {
       result.push({ ...line, id: result.length + 1 })
     }
   }
-  return result // Không gọi validateTimestamps ở đây cho YouTube CC
+
+  if (buffer) {
+    result.push({
+      ...(bufferBaseLine || lines[lines.length - 1]),
+      id:        result.length + 1,
+      startTime: bufferStart,
+      endTime:   bufferEndTime,
+      text:      buffer.trim(),
+    })
+  }
+
+  return result.map((l, idx) => ({ ...l, id: idx + 1 }))
 }
 
 /**
  * FIX 2: Validate timestamps to prevent Gemini from hallucinating long durations.
  * Especially for longer sentences that might exceed the video's actual duration.
  */
-export function validateTimestamps(lines: TranscriptLine[], language: string = 'en'): TranscriptLine[] {
-  if (!lines.length) return lines;
+export function validateTimestamps(
+  lines: TranscriptLine[],
+  language: string = 'en'
+): TranscriptLine[] {
+  if (!lines.length) return lines
 
   return lines.map((line, index) => {
-    const nextLine = lines[index + 1];
-    
-    // Calculate max allowed duration based on content length
-    // English: ~15-20 chars/sec, Chinese: ~3-5 chars/sec
-    const isChinese = /[\u4e00-\u9fa5]/.test(line.text);
-    const charCount = line.text.length;
-    const wordCount = line.text.split(/\s+/).length;
-    
-    // Heuristic: 0.4s per word (EN) or 0.6s per char (ZH) + 1s base
-    const estimatedDuration = isChinese 
-      ? (charCount * 0.6) + 1.5 
-      : (wordCount * 0.5) + 1.5;
-    
-    // Cap duration to a reasonable max (e.g., 15s)
-    const maxDuration = Math.min(estimatedDuration, 15);
-    
-    let validatedEnd = line.endTime;
-    
-    // 1. If endTime is missing or too far, cap it
-    if (!validatedEnd || validatedEnd <= line.startTime || (validatedEnd - line.startTime) > maxDuration) {
-      validatedEnd = line.startTime + maxDuration;
+    const nextLine = lines[index + 1]
+
+    const isChinese  = /[\u4e00-\u9fa5]/.test(line.text)
+    const charCount  = line.text.replace(/[^\u4e00-\u9fa5\w]/g, '').length
+    const wordCount  = line.text.split(/\s+/).length
+
+    const estimatedDuration = isChinese
+      ? (charCount * 0.45) + 1.0
+      : (wordCount * 0.45) + 1.0
+
+    const maxDuration = Math.min(estimatedDuration, 12)
+
+    let validatedEnd = line.endTime
+
+    const currentSpan = line.endTime - line.startTime
+    if (!validatedEnd || validatedEnd <= line.startTime || currentSpan > 20) {
+      validatedEnd = line.startTime + maxDuration
     }
-    
-    // 2. Prevent overlap with next sentence
-    if (nextLine && validatedEnd > nextLine.startTime) {
-      validatedEnd = Math.max(line.startTime + 0.5, nextLine.startTime);
+
+    if (nextLine) {
+      const gapToNext = nextLine.startTime - validatedEnd
+      if (gapToNext < 0) {
+        validatedEnd = Math.max(line.startTime + 0.3, nextLine.startTime - 0.1)
+      }
     }
-    
+
     return {
       ...line,
       endTime: Math.round(validatedEnd * 10) / 10
-    };
-  });
+    }
+  })
 }
 
 export async function transcribeWithGemini(

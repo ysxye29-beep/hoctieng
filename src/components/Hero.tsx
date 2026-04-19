@@ -3,7 +3,6 @@ import { Youtube, Upload, Link as LinkIcon, ChevronDown, Video } from 'lucide-re
 import { extractYouTubeId, fetchYouTubeInfo, isValidYouTubeUrl } from '../lib/youtube';
 import { addVideo, VideoItem } from '../lib/storage';
 import { useLanguageStore, type Language } from '../store/languageStore';
-import { useAuth } from '../context/AuthContext';
 
 const heroGradients: Record<Language, string> = {
   'en':    'from-blue-900/40 to-indigo-900/20',    // xanh Anh/Mỹ  
@@ -12,7 +11,6 @@ const heroGradients: Record<Language, string> = {
 
 export default function Hero({ onVideoAdded }: { onVideoAdded: () => void }) {
   const { config, language } = useLanguageStore();
-  const { user, loginGoogle } = useAuth();
   const [url, setUrl] = useState('');
   const [lang, setLang] = useState(language as string);
   const [sub, setSub] = useState('none');

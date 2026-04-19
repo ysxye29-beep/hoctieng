@@ -6,6 +6,9 @@ interface FontSizeSettings {
   zhTrans: number;
   enMain: number;
   enTrans: number;
+  dictSize: number;
+  dictWidth: number;
+  dictHeight: number;
 }
 
 interface FontSizeStore {
@@ -21,11 +24,23 @@ export const useFontSizeStore = create<FontSizeStore>()(
         zhTrans: 18,
         enMain: 24,
         enTrans: 18,
+        dictSize: 100,
+        dictWidth: 340,
+        dictHeight: 500,
       },
       updateSettings: (newSettings) =>
-        set((state) => ({
-          settings: { ...state.settings, ...newSettings },
-        })),
+        set((state) => {
+          // Ensure dictSize is never NaN if it was undefined in legacy storage
+          const currentSettings = {
+            ...state.settings,
+            dictSize: state.settings.dictSize ?? 100,
+            dictWidth: state.settings.dictWidth ?? 340,
+            dictHeight: state.settings.dictHeight ?? 500,
+          };
+          return {
+            settings: { ...currentSettings, ...newSettings },
+          };
+        }),
     }),
     {
       name: 'font_size_settings',
